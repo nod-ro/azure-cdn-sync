@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+    app:
+        build: .
+        container_name: laravel_app
+        volumes:
+            - .:/var/www/html
+        environment:
+            - PUID=1000
+            - PGID=1000
+        restart: unless-stopped
+    nginx:
+        image: nginx:latest
+        container_name: laravel_nginx
+        ports:
+            - "8000:80"
+        volumes:
+            - .:/var/www/html
+            - ./nginx.conf:/etc/nginx/conf.d/default.conf
+        depends_on:
+            - app
+        restart: unless-stopped
