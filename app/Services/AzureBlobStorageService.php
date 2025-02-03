@@ -5,7 +5,7 @@ use MicrosoftAzure\Storage\Blob\BlobRestProxy;
 use MicrosoftAzure\Storage\Blob\Models\CreateBlockBlobOptions;
 use Intervention\Image\Facades\Image;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
+use MicrosoftAzure\Storage\Blob\Models\ListBlobsOptions;
 use Mockery\Exception;
 
 class AzureBlobStorageService
@@ -22,19 +22,7 @@ class AzureBlobStorageService
         foreach ($this->environments as $env) {
             $connectionString = env("AZURE_STORAGE_CONNECTION_STRING_" . strtoupper($env));
             $container = env("AZURE_STORAGE_CONTAINER_" . strtoupper($env));
-            $storageUrl = env("AZURE_STORAGE_URL_" . strtoupper($env));
-
-//            echo getenv("AZURE_STORAGE_CONNECTION_STRING_SBX") . PHP_EOL;
-//            echo getenv("NOD_PASSWORD_SBX") . PHP_EOL;
-//            echo getenv("NOD_USER_SBX") . PHP_EOL;
-//            echo $env . PHP_EOL;
-//            echo strtoupper($env) . PHP_EOL;
-//            echo "AZURE_STORAGE_CONNECTION_STRING_" . strtoupper($env) . PHP_EOL;
-//            echo "connectionString:" . $connectionString . PHP_EOL;
-//            echo "container:" .  $container . PHP_EOL;
-//            echo "connectionString:" . $connectionString . PHP_EOL;
-
-            if (!$connectionString || !$container || !$storageUrl) {
+            if (!$connectionString || !$container) {
                 Log::error("Missing Azure Storage credentials for environment: $env");
                 continue;
             }
@@ -42,7 +30,6 @@ class AzureBlobStorageService
             try {
                 $this->blobClients[$env] = BlobRestProxy::createBlobService($connectionString);
                 $this->containers[$env] = $container;
-                $this->storageUrls[$env] = $storageUrl;
                 Log::info("Successfully initialized Azure Blob Storage for $env");
             } catch (\Exception $e) {
                 Log::error("Failed to initialize Azure Blob for $env: " . $e->getMessage());
@@ -50,114 +37,260 @@ class AzureBlobStorageService
         }
 
         if (empty($this->blobClients)) {
-           throw new \Exception("No valid Azure Storage configurations found.");
+       //     throw new \Exception("No valid Azure Storage configurations found.");
         }
     }
 
-    public function syncCDN(){
+    public function syncCDN()
+    {
         $nod_service = new NODService();
-        foreach( $this->environments as $env) {
+
+        // Ensure a fresh "thumbnails" folder at the start
+        if (is_dir('thumbnails')) {
+            $this->emptyFolder('thumbnails');
+            rmdir('thumbnails');
+        }
+        mkdir('thumbnails', 0777, true);
+
+        $imageCount = 0;
+
+        foreach ($this->environments as $env) {
             $products = $nod_service->getFullFeedV2($env);
-            foreach($products as $product) {
+            $total_products = count($products);
+            echo "Processing $total_products products for $env...\n";
+            $counter = 0;
+            foreach ($products as $product) {
+                $counter++;
                 $images = $product['pictures'];
-                foreach($images as $image){
+                $message = "Processing product $counter of $total_products with " . count($images) . " images to process..";
+                Log::info($message);
+                echo $message . PHP_EOL;
+                foreach ($images as $image) {
                     try {
                         $this->syncImage($env, $image['picture_url']);
+                        // Every 100 images, check folder size
+                        if ($imageCount % 100 === 0 && $this->getFolderSize('thumbnails') > 1 * 1024 * 1024 * 1024) {
+                            Log::info("Thumbnails folder exceeded 1GB, clearing...");
+                            $this->emptyFolder('thumbnails');
+                        }
                     } catch (Exception $e) {
                         Log::error("Error in syncImage(): " . $e->getMessage());
                     }
                 }
             }
         }
+
+        // Clean up "thumbnails" folder at the end
+        $this->emptyFolder('thumbnails');
+        rmdir('thumbnails');
+        mkdir('thumbnails', 0777, true);
     }
 
-    public function syncImage($env, $nodImageUrl)
+// Helper function to empty a folder
+    private function emptyFolder($folder)
+    {
+        $files = glob("$folder/*");
+        foreach ($files as $file) {
+            if (is_file($file)) {
+                unlink($file);
+            }
+        }
+    }
+
+// Helper function to calculate folder size
+    private function getFolderSize($folder)
+    {
+        $size = 0;
+        foreach (glob("$folder/*") as $file) {
+            $size += is_file($file) ? filesize($file) : 0;
+        }
+        return $size;
+    }
+
+    public function syncImage($env, $nodImageUrl, $azureFolder = false)
     {
         echo "Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
         try {
             Log::info("Downloading image from: $nodImageUrl");
 
-            // Ensure temporary directory exists
-            $tempDir = storage_path('app/temp');
-            if (!file_exists($tempDir)) {
-                mkdir($tempDir, 0755, true);
-            }
-
             // Extract original filename and extension correctly
             $pathInfo = pathinfo(parse_url($nodImageUrl, PHP_URL_PATH));
             $originalFileName = preg_replace('/[^a-zA-Z0-9_-]/', '', $pathInfo['filename']); // Remove special characters
-            $originalExtension = isset($pathInfo['extension']) ? strtolower($pathInfo['extension']) : 'jpg'; // Default to JPG if missing
+            $originalExtension = $pathInfo['extension'] ?? 'jpg'; // No strtolower()
+            // Preserve original filename
+            $originalImagePath = "thumbnails/{$originalFileName}.{$originalExtension}";
 
-            // Preserve original filename exactly as it is
-            $originalImagePath = "{$tempDir}/{$originalFileName}.{$originalExtension}";
+            // ✅ Generate Azure path for the original image
+            $blobClient = $this->blobClients[$env];
+            $container = $this->containers[$env];
+            if($azureFolder){
+                $originalAzureFilePath = "{$azureFolder}/{$originalFileName}.{$originalExtension}";
+            } else {
+                $originalAzureFilePath = "{$originalFileName}.{$originalExtension}";
+            }
+            // ✅ Check if image exists in Azure first
+            $existsInAzure = $this->azureImageExists($blobClient, $container, $originalAzureFilePath);
 
-            // ✅ Check if original image already exists before saving
             if (!file_exists($originalImagePath)) {
-                $imageContents = @file_get_contents($nodImageUrl);
+                if ($existsInAzure) {
+                    // ✅ Download from Azure instead of skipping
+                    Log::info("Downloading image from Azure: $originalAzureFilePath");
+                    $imageContents = $this->downloadAzureBlob($blobClient, $container, $originalAzureFilePath);
+                } else {
+                    Log::info("Downloading image from URL: $nodImageUrl");
+                    $imageContents = file_get_contents($nodImageUrl);
+                }
+
                 if (!$imageContents) {
-                    throw new \Exception("Failed to download image from URL: $nodImageUrl");
+                    throw new \Exception("Failed to download image from source: " . ($existsInAzure ? "Azure" : "URL") . " $originalAzureFilePath");
                 }
 
                 file_put_contents($originalImagePath, $imageContents);
                 Log::info("Original image saved: $originalImagePath");
-            } else {
-                Log::info("Original image already exists, skipping download: $originalImagePath");
             }
 
-            // 3. Generate thumbnails only if they don’t exist
+            // ✅ Upload the original image to Azure if it's missing
+            if (!$existsInAzure) {
+                $uploadedOriginalUrl = $this->uploadFile($blobClient, $container, $originalImagePath, $originalAzureFilePath, $env);
+                if ($uploadedOriginalUrl) {
+                    Log::info("Original image uploaded to Azure: $uploadedOriginalUrl");
+                } else {
+                    Log::error("Failed to upload original image to Azure: $originalImagePath");
+                }
+            } else {
+                Log::info("Image already exists in Azure, skipping upload: $originalAzureFilePath");
+            }
+
+            // ✅ WordPress Image Sizes (Ensuring All Are Processed)
             $sizes = [
-                '300x300' => [300, 300],
-                '600x600' => [600, 600],
+                'thumbnail' => [150, 150, true], // Crop
+                'medium' => [300, 300, false], // No Crop
+                'medium_second' => [600, 600, false], // No Crop
+                'medium_third' => [768, 768, false], // No Crop
+                'medium_large' => [768, 0, false], // Auto height
+                'large' => [1024, 1024, false], // No Crop
+                'full' => [0, 0, false], // ✅ Keeps original without modifying filename
+                '1536x1536' => [1536, 1536, false], // No Crop
+                '2048x2048' => [2048, 2048, false], // No Crop
+                'yith-woocompare-image' => [220, 154, true], // Crop
+                'electro_blog_small' => [430, 245, true], // Crop
+                'electro_blog_medium' => [870, 460, true], // Crop
+                'electro_blog_large' => [1170, 615, true], // Crop
+                'electro_blog_carousel' => [270, 180, true], // Crop
+                'woocommerce_thumbnail' => [300, 300, true], // Crop
+                'woocommerce_single' => [600, 0, false], // Auto height
+                'woocommerce_gallery_thumbnail' => [100, 100, true], // Crop
             ];
 
-            $uploadedFiles = [];
+            foreach ($sizes as $sizeName => [$width, $height, $crop]) {
+                Log::info("Processing size: $sizeName ({$width}x{$height})");
 
-            foreach ($sizes as $sizeName => $dimensions) {
-                [$width, $height] = $dimensions;
-                $resizedFileName = "{$originalFileName}-{$sizeName}.{$originalExtension}";
-                $resizedPath = "{$tempDir}/{$resizedFileName}";
+                // ✅ Skip "full" size because it's just the original image
+                if ($sizeName === 'full') {
+                    Log::info("Skipping full-size processing (original already uploaded).");
+                    continue;
+                }
 
-                if (!file_exists($resizedPath)) {
-                    // Resize and handle interlaced PNG
-                    $image = Image::make($originalImagePath)
-                        ->resize($width, $height, function ($constraint) {
+                // ✅ Load the original image safely
+                try {
+                    $imageOriginal = Image::make($originalImagePath);
+                } catch (\Exception $e) {
+                    Log::error("Failed to open image: " . $originalImagePath . " - Error: " . $e->getMessage());
+                    continue; // Skip this image if it's invalid
+                }
+
+                // ✅ Ensure the image has valid dimensions before calculations
+                $imageWidth = $imageOriginal->width();
+                $imageHeight = $imageOriginal->height();
+
+                if ($imageWidth <= 0 || $imageHeight <= 0) {
+                    Log::error("Invalid image dimensions (0x0) for {$originalImagePath}. Skipping...");
+                    continue; // Skip processing this image
+                }
+
+                // ✅ Handle auto-height images correctly (height = 0 means "auto-calculate based on aspect ratio")
+                if ($height === 0) {
+                    if ($imageHeight > 0) { // ✅ Prevent division by zero
+                        $aspectRatio = $imageWidth / $imageHeight;
+                        $height = (int) round($width / $aspectRatio);
+                        Log::info("Auto height calculated: {$width}x{$height} for {$sizeName}");
+                    } else {
+                        Log::error("Aspect ratio calculation failed for {$sizeName}. Skipping...");
+                        continue; // Skip processing if aspect ratio is invalid
+                    }
+                }
+
+                // ✅ Generate correct file name
+                $resizedFileName = "{$originalFileName}-{$width}x{$height}." . strtolower($originalExtension);
+                $resizedPath = "thumbnails/{$resizedFileName}";
+                if($azureFolder){
+                    $azureFilePath = "{$azureFolder}/{$resizedFileName}";
+                } else {
+                    $azureFilePath = "{$resizedFileName}";
+                }
+
+                // ✅ Check if file already exists in Azure
+                if (!$this->azureImageExists($blobClient, $container, $azureFilePath)) {
+                    $image = Image::make($originalImagePath);
+
+                    if ($crop) {
+                        // ✅ First, ensure image is large enough to crop
+                        $image->resize($width, $height, function ($constraint) {
                             $constraint->aspectRatio();
-                            $constraint->upsize();
+                            $constraint->upsize(); // ✅ Ensures small images are resized up
                         });
 
-                    if ($originalExtension === 'png') {
-                        $image->interlace(true); // Enable interlace for PNG
+                        // ✅ Now apply cropping
+                        $image->fit($width, $height);
+                    } else {
+                        $image->resize($width, $height, function ($constraint) {
+                            $constraint->aspectRatio();
+                            $constraint->upsize(); // ✅ Ensures images are always created
+                        });
                     }
 
                     $image->save($resizedPath);
-                    Log::info("Generated thumbnail: $resizedFileName");
+                    Log::info("Generated image: $resizedFileName");
+
+                    // ✅ Upload resized image to Azure
+                    $this->uploadFile($blobClient, $container, $resizedPath, $azureFilePath, $env);
+                    Log::info("Uploaded to Azure: $azureFilePath");
                 } else {
-                    Log::info("Thumbnail already exists, skipping: $resizedPath");
-                }
-
-                // 4. Upload to Azure SBX
-                if (!isset($this->blobClients[$env])) {
-                    throw new \Exception("Invalid environment specified: $env");
-                }
-
-                $blobClient = $this->blobClients[$env];
-                $azureFilePath = "testing/{$resizedFileName}";
-                $uploadedUrl = $this->uploadFile($blobClient, $this->containers[$env], $resizedPath, $azureFilePath, $env);
-
-                if ($uploadedUrl) {
-                    $uploadedFiles[$env][$sizeName] = $uploadedUrl;
-                    Log::info("Uploaded to $env: $uploadedUrl");
-                } else {
-                    Log::error("Failed to upload $resizedFileName to $env");
+                    Log::info("Image already exists in Azure, skipping upload: $azureFilePath");
                 }
             }
 
-            Log::info("Thumbnails generated and uploaded successfully!");
-
-            return $uploadedFiles;
+            return true;
         } catch (\Exception $e) {
             Log::error("Error in syncImage(): " . $e->getMessage());
-            return ['error' => $e->getMessage()];
+            return false;
+        }
+    }
+
+    private function azureImageExists($blobClient, $container, $azureFilePath)
+    {
+        try {
+            $listOptions = new ListBlobsOptions();
+            $listOptions->setPrefix($azureFilePath);
+
+            $blobList = $blobClient->listBlobs($container, $listOptions);
+            return !empty($blobList->getBlobs());
+        } catch (\Exception $e) {
+            Log::error("Error checking Azure file existence: " . $e->getMessage());
+            return false;
+        }
+    }
+
+
+    private function downloadAzureBlob($blobClient, $container, $blobPath)
+    {
+        try {
+            Log::info("Attempting to fetch Azure blob: $blobPath");
+            $blob = $blobClient->getBlob($container, $blobPath);
+            return stream_get_contents($blob->getContentStream());
+        } catch (\Exception $e) {
+            Log::error("Failed to download image from Azure: " . $e->getMessage());
+            return false;
         }
     }
 
@@ -174,7 +307,7 @@ class AzureBlobStorageService
 
             $blobClient->createBlockBlob($container, $azureFilePath, $content, $options);
 
-            return $this->storageUrls[$env] . '/' . $container . '/' . $azureFilePath;
+            return  $container . '/' . $azureFilePath;
         } catch (\Exception $e) {
             Log::error("Azure Upload Error in $env: " . $e->getMessage());
             return false;
