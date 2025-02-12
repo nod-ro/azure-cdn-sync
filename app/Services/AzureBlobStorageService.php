@@ -48,6 +48,9 @@ class AzureBlobStorageService
             $products = $nod_service->getFullFeedV2($env);
             $total_products = count($products);
             echo "Processing $total_products products for $env...\n";
+            if (!is_dir('thumbnails')) {
+                mkdir('thumbnails', 0777, true);
+            }
             $counter = 0;
             foreach ($products as $product) {
                 $counter++;
@@ -72,9 +75,6 @@ class AzureBlobStorageService
         echo "Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
         try {
             Log::info("Downloading image from: $nodImageUrl");
-            if (!is_dir('thumbnails')) {
-                mkdir('thumbnails', 0777, true);
-            }
             // Extract original filename and extension correctly
             $pathInfo = pathinfo(parse_url($nodImageUrl, PHP_URL_PATH));
             $originalFileName = preg_replace('/[^a-zA-Z0-9_-]/', '', $pathInfo['filename']); // Remove special characters
