@@ -24,7 +24,10 @@ class AzureCdnSync extends Command
         // 1) Get your product feed
         $nodService = new NODService();
         $products   = $nodService->getFullFeedV2($env);
-
+        // Ensure a fresh "thumbnails" folder at the start
+        if (!is_dir('thumbnails')) {
+            mkdir('thumbnails', 0777, true);
+        }
         // 2) Gather all images across all products
         $allImages = [];
         foreach ($products as $product) {
@@ -48,5 +51,15 @@ class AzureCdnSync extends Command
         }
 
         $this->info("Dispatched $chunkCount total jobs. Now run `php artisan queue:work` (in multiple workers) to process them in parallel.");
+    }
+
+    private function emptyFolder($folder)
+    {
+        $files = glob("$folder/*");
+        foreach ($files as $file) {
+            if (is_file($file)) {
+                unlink($file);
+            }
+        }
     }
 }

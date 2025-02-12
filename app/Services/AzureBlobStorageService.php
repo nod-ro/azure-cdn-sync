@@ -44,16 +44,6 @@ class AzureBlobStorageService
     public function syncCDN()
     {
         $nod_service = new NODService();
-
-        // Ensure a fresh "thumbnails" folder at the start
-        if (is_dir('thumbnails')) {
-            $this->emptyFolder('thumbnails');
-            rmdir('thumbnails');
-        }
-        mkdir('thumbnails', 0777, true);
-
-        $imageCount = 0;
-
         foreach ($this->environments as $env) {
             $products = $nod_service->getFullFeedV2($env);
             $total_products = count($products);
@@ -68,44 +58,14 @@ class AzureBlobStorageService
                 foreach ($images as $image) {
                     try {
                         $this->syncImage($env, $image['picture_url']);
-                        // Every 100 images, check folder size
-                        if ($imageCount % 100 === 0 && $this->getFolderSize('thumbnails') > 1 * 1024 * 1024 * 1024) {
-                            Log::info("Thumbnails folder exceeded 1GB, clearing...");
-                            $this->emptyFolder('thumbnails');
-                        }
                     } catch (Exception $e) {
                         Log::error("Error in syncImage(): " . $e->getMessage());
                     }
                 }
             }
         }
-
-        // Clean up "thumbnails" folder at the end
-        $this->emptyFolder('thumbnails');
-        rmdir('thumbnails');
-        mkdir('thumbnails', 0777, true);
     }
 
-// Helper function to empty a folder
-    private function emptyFolder($folder)
-    {
-        $files = glob("$folder/*");
-        foreach ($files as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
-    }
-
-// Helper function to calculate folder size
-    private function getFolderSize($folder)
-    {
-        $size = 0;
-        foreach (glob("$folder/*") as $file) {
-            $size += is_file($file) ? filesize($file) : 0;
-        }
-        return $size;
-    }
 
     public function syncImage($env, $nodImageUrl, $azureFolder = false)
     {
@@ -132,18 +92,18 @@ class AzureBlobStorageService
             $existsInAzure = $this->azureImageExists($blobClient, $container, $originalAzureFilePath);
 
             if (!file_exists($originalImagePath)) {
-                if ($existsInAzure) {
-                    // ✅ Download from Azure instead of skipping
-                    Log::info("Downloading image from Azure: $originalAzureFilePath");
-                    $imageContents = $this->downloadAzureBlob($blobClient, $container, $originalAzureFilePath);
-                } else {
+//                if ($existsInAzure) {
+//                    // ✅ Download from Azure instead of skipping
+//                    Log::info("Downloading image from Azure: $originalAzureFilePath");
+//                    $imageContents = $this->downloadAzureBlob($blobClient, $container, $originalAzureFilePath);
+//                } else {
                     Log::info("Downloading image from URL: $nodImageUrl");
                     $imageContents = file_get_contents($nodImageUrl);
-                }
+//                }
 
-                if (!$imageContents) {
-                    throw new \Exception("Failed to download image from source: " . ($existsInAzure ? "Azure" : "URL") . " $originalAzureFilePath");
-                }
+//                if (!$imageContents) {
+//                    throw new \Exception("Failed to download image from source: " . ($existsInAzure ? "Azure" : "URL") . " $originalAzureFilePath");
+//                }
 
                 file_put_contents($originalImagePath, $imageContents);
                 Log::info("Original image saved: $originalImagePath");
@@ -203,10 +163,10 @@ class AzureBlobStorageService
                 $imageWidth = $imageOriginal->width();
                 $imageHeight = $imageOriginal->height();
 
-                if ($imageWidth <= 0 || $imageHeight <= 0) {
-                    Log::error("Invalid image dimensions (0x0) for {$originalImagePath}. Skipping...");
-                    continue; // Skip processing this image
-                }
+//                if ($imageWidth <= 0 || $imageHeight <= 0) {
+//                    Log::error("Invalid image dimensions (0x0) for {$originalImagePath}. Skipping...");
+//                    continue; // Skip processing this image
+//                }
 
                 // ✅ Handle auto-height images correctly (height = 0 means "auto-calculate based on aspect ratio")
                 if ($height === 0) {
