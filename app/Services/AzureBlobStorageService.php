@@ -69,49 +69,41 @@ class AzureBlobStorageService
         }
     }
 
-
     public function syncImage($env, $nodImageUrl, $azureFolder = false)
     {
         echo "Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
         try {
             Log::info("Downloading image from: $nodImageUrl");
+
             // Extract original filename and extension correctly
             $pathInfo = pathinfo(parse_url($nodImageUrl, PHP_URL_PATH));
             $originalFileName = preg_replace('/[^a-zA-Z0-9_-]/', '', $pathInfo['filename']); // Remove special characters
-            $originalExtension = $pathInfo['extension'] ?? 'jpg'; // No strtolower()
-            // Preserve original filename
-            $originalImagePath = "thumbnails/{$originalFileName}.{$originalExtension}";
+            $originalExtension = $pathInfo['extension'] ?? 'jpg'; // Default to jpg if no extension provided
 
-            // ✅ Generate Azure path for the original image
+            // Use base_path to dynamically build the path inside the application directory
+            $originalImagePath = base_path("thumbnails/{$originalFileName}.{$originalExtension}");
+
+            // Generate Azure path for the original image
             $blobClient = $this->blobClients[$env];
             $container = $this->containers[$env];
-            if($azureFolder){
+            if ($azureFolder) {
                 $originalAzureFilePath = "{$azureFolder}/{$originalFileName}.{$originalExtension}";
             } else {
                 $originalAzureFilePath = "{$originalFileName}.{$originalExtension}";
             }
-            // ✅ Check if image exists in Azure first
+
+            // Check if the image already exists in Azure
             $existsInAzure = $this->azureImageExists($blobClient, $container, $originalAzureFilePath);
 
+            // If the image does not exist locally, download it
             if (!file_exists($originalImagePath)) {
-//                if ($existsInAzure) {
-//                    // ✅ Download from Azure instead of skipping
-//                    Log::info("Downloading image from Azure: $originalAzureFilePath");
-//                    $imageContents = $this->downloadAzureBlob($blobClient, $container, $originalAzureFilePath);
-//                } else {
-                    Log::info("Downloading image from URL: $nodImageUrl");
-                    $imageContents = file_get_contents($nodImageUrl);
-//                }
-
-//                if (!$imageContents) {
-//                    throw new \Exception("Failed to download image from source: " . ($existsInAzure ? "Azure" : "URL") . " $originalAzureFilePath");
-//                }
-
+                Log::info("Downloading image from URL: $nodImageUrl");
+                $imageContents = file_get_contents($nodImageUrl);
                 file_put_contents($originalImagePath, $imageContents);
                 Log::info("Original image saved: $originalImagePath");
             }
 
-            // ✅ Upload the original image to Azure if it's missing
+            // Upload the original image to Azure if it's missing
             if (!$existsInAzure) {
                 $uploadedOriginalUrl = $this->uploadFile($blobClient, $container, $originalImagePath, $originalAzureFilePath, $env);
                 if ($uploadedOriginalUrl) {
@@ -123,22 +115,13 @@ class AzureBlobStorageService
                 Log::info("Image already exists in Azure, skipping upload: $originalAzureFilePath");
             }
 
-            // ✅ WordPress Image Sizes (Ensuring All Are Processed)
+            // WordPress Image Sizes (Ensuring All Are Processed)
             $sizes = [
                 'thumbnail' => [150, 150, true], // Crop
                 'medium' => [300, 300, false], // No Crop
                 'medium_second' => [600, 600, false], // No Crop
-            //    'medium_third' => [768, 768, false], // No Crop
-            //    'medium_large' => [768, 0, false], // Auto height
                 'large' => [1024, 1024, false], // No Crop
-                'full' => [0, 0, false], // ✅ Keeps original without modifying filename
-            //    '1536x1536' => [1536, 1536, false], // No Crop
-            //    '2048x2048' => [2048, 2048, false], // No Crop
-            //    'yith-woocompare-image' => [220, 154, true], // Crop
-            //    'electro_blog_small' => [430, 245, true], // Crop
-            //    'electro_blog_medium' => [870, 460, true], // Crop
-            //   'electro_blog_large' => [1170, 615, true], // Crop
-            //    'electro_blog_carousel' => [270, 180, true], // Crop
+                'full' => [0, 0, false], // Keeps original without modifying filename
                 'woocommerce_thumbnail' => [300, 300, true], // Crop
                 'woocommerce_single' => [600, 0, false], // Auto height
                 'woocommerce_gallery_thumbnail' => [100, 100, true], // Crop
@@ -147,13 +130,13 @@ class AzureBlobStorageService
             foreach ($sizes as $sizeName => [$width, $height, $crop]) {
                 Log::info("Processing size: $sizeName ({$width}x{$height})");
 
-                // ✅ Skip "full" size because it's just the original image
+                // Skip "full" size because it's just the original image
                 if ($sizeName === 'full') {
                     Log::info("Skipping full-size processing (original already uploaded).");
                     continue;
                 }
 
-                // ✅ Load the original image safely
+                // Load the original image safely
                 try {
                     $imageOriginal = Image::make($originalImagePath);
                 } catch (\Exception $e) {
@@ -161,18 +144,13 @@ class AzureBlobStorageService
                     continue; // Skip this image if it's invalid
                 }
 
-                // ✅ Ensure the image has valid dimensions before calculations
+                // Ensure the image has valid dimensions before calculations
                 $imageWidth = $imageOriginal->width();
                 $imageHeight = $imageOriginal->height();
 
-//                if ($imageWidth <= 0 || $imageHeight <= 0) {
-//                    Log::error("Invalid image dimensions (0x0) for {$originalImagePath}. Skipping...");
-//                    continue; // Skip processing this image
-//                }
-
-                // ✅ Handle auto-height images correctly (height = 0 means "auto-calculate based on aspect ratio")
+                // Handle auto-height images correctly (height = 0 means "auto-calculate based on aspect ratio")
                 if ($height === 0) {
-                    if ($imageHeight > 0) { // ✅ Prevent division by zero
+                    if ($imageHeight > 0) { // Prevent division by zero
                         $aspectRatio = $imageWidth / $imageHeight;
                         $height = (int) round($width / $aspectRatio);
                         Log::info("Auto height calculated: {$width}x{$height} for {$sizeName}");
@@ -182,39 +160,41 @@ class AzureBlobStorageService
                     }
                 }
 
-                // ✅ Generate correct file name
+                // Generate correct file name for resized image
                 $resizedFileName = "{$originalFileName}-{$width}x{$height}." . strtolower($originalExtension);
-                $resizedPath = "thumbnails/{$resizedFileName}";
-                if($azureFolder){
+                $resizedPath = base_path("thumbnails/{$resizedFileName}");
+
+                if ($azureFolder) {
                     $azureFilePath = "{$azureFolder}/{$resizedFileName}";
                 } else {
                     $azureFilePath = "{$resizedFileName}";
                 }
 
-                // ✅ Check if file already exists in Azure
+                // Check if the file already exists in Azure
                 if (!$this->azureImageExists($blobClient, $container, $azureFilePath)) {
                     $image = Image::make($originalImagePath);
 
                     if ($crop) {
-                        // ✅ First, ensure image is large enough to crop
+                        // Ensure the image is large enough to crop
                         $image->resize($width, $height, function ($constraint) {
                             $constraint->aspectRatio();
-                            $constraint->upsize(); // ✅ Ensures small images are resized up
+                            $constraint->upsize(); // Ensures small images are resized up
                         });
 
-                        // ✅ Now apply cropping
+                        // Apply cropping
                         $image->fit($width, $height);
                     } else {
                         $image->resize($width, $height, function ($constraint) {
                             $constraint->aspectRatio();
-                            $constraint->upsize(); // ✅ Ensures images are always created
+                            $constraint->upsize(); // Ensures images are always created
                         });
                     }
 
+                    // Save the resized image locally
                     $image->save($resizedPath);
                     Log::info("Generated image: $resizedFileName");
 
-                    // ✅ Upload resized image to Azure
+                    // Upload resized image to Azure
                     $this->uploadFile($blobClient, $container, $resizedPath, $azureFilePath, $env);
                     Log::info("Uploaded to Azure: $azureFilePath");
                 } else {
