@@ -17,7 +17,7 @@ class AzureBlobStorageService
     public function __construct()
     {
         // Only process SBX environment
-        $this->environments = ['sbx'];
+        $this->environments = ['prod','sbx'];
 
         foreach ($this->environments as $env) {
             $connectionString = env("AZURE_STORAGE_CONNECTION_STRING_" . strtoupper($env));
@@ -81,7 +81,7 @@ class AzureBlobStorageService
             $originalExtension = $pathInfo['extension'] ?? 'jpg'; // Default to jpg if no extension provided
 
             // Use base_path to dynamically build the path inside the application directory
-            $originalImagePath = base_path("thumbnails/{$originalFileName}.{$originalExtension}");
+            $originalImagePath = base_path( "thumbnails/{$originalFileName}.{$originalExtension}");
 
             // Generate Azure path for the original image
             $blobClient = $this->blobClients[$env];
