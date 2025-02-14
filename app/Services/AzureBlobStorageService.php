@@ -73,7 +73,7 @@ class AzureBlobStorageService
     {
         echo "Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
         try {
-            Log::info("Downloading image from: $nodImageUrl");
+            Log::info("[$env] Downloading image from: $nodImageUrl");
 
             // Extract original filename and extension correctly
             $pathInfo = pathinfo(parse_url($nodImageUrl, PHP_URL_PATH));
@@ -97,22 +97,22 @@ class AzureBlobStorageService
 
             // If the image does not exist locally, download it
             if (!file_exists($originalImagePath)) {
-                Log::info("Downloading image from URL: $nodImageUrl");
+                Log::info("[$env] Downloading image from URL: $nodImageUrl");
                 $imageContents = file_get_contents($nodImageUrl);
                 file_put_contents($originalImagePath, $imageContents);
-                Log::info("Original image saved: $originalImagePath");
+                Log::info("[$env] Original image saved: $originalImagePath");
             }
 
             // Upload the original image to Azure if it's missing
             if (!$existsInAzure) {
                 $uploadedOriginalUrl = $this->uploadFile($blobClient, $container, $originalImagePath, $originalAzureFilePath, $env);
                 if ($uploadedOriginalUrl) {
-                    Log::info("Original image uploaded to Azure: $uploadedOriginalUrl");
+                    Log::info("[$env] Original image uploaded to Azure: $uploadedOriginalUrl");
                 } else {
-                    Log::error("Failed to upload original image to Azure: $originalImagePath");
+                    Log::error("[$env] Failed to upload original image to Azure: $originalImagePath");
                 }
             } else {
-                Log::info("Image already exists in Azure, skipping upload: $originalAzureFilePath");
+                Log::info("[$env] Image already exists in Azure, skipping upload: $originalAzureFilePath");
             }
 
             // WordPress Image Sizes (Ensuring All Are Processed)
@@ -128,11 +128,11 @@ class AzureBlobStorageService
             ];
 
             foreach ($sizes as $sizeName => [$width, $height, $crop]) {
-                Log::info("Processing size: $sizeName ({$width}x{$height})");
+                Log::info("[$env] Processing size: $sizeName ({$width}x{$height})");
 
                 // Skip "full" size because it's just the original image
                 if ($sizeName === 'full') {
-                    Log::info("Skipping full-size processing (original already uploaded).");
+                    Log::info("[$env] Skipping full-size processing (original already uploaded).");
                     continue;
                 }
 
@@ -140,7 +140,7 @@ class AzureBlobStorageService
                 try {
                     $imageOriginal = Image::make($originalImagePath);
                 } catch (\Exception $e) {
-                    Log::error("Failed to open image: " . $originalImagePath . " - Error: " . $e->getMessage());
+                    Log::error("[$env] Failed to open image: " . $originalImagePath . " - Error: " . $e->getMessage());
                     continue; // Skip this image if it's invalid
                 }
 
@@ -153,9 +153,9 @@ class AzureBlobStorageService
                     if ($imageHeight > 0) { // Prevent division by zero
                         $aspectRatio = $imageWidth / $imageHeight;
                         $height = (int) round($width / $aspectRatio);
-                        Log::info("Auto height calculated: {$width}x{$height} for {$sizeName}");
+                        Log::info("[$env] Auto height calculated: {$width}x{$height} for {$sizeName}");
                     } else {
-                        Log::error("Aspect ratio calculation failed for {$sizeName}. Skipping...");
+                        Log::error("[$env] Aspect ratio calculation failed for {$sizeName}. Skipping...");
                         continue; // Skip processing if aspect ratio is invalid
                     }
                 }
@@ -192,19 +192,19 @@ class AzureBlobStorageService
 
                     // Save the resized image locally
                     $image->save($resizedPath);
-                    Log::info("Generated image: $resizedFileName");
+                    Log::info("[$env] Generated image: $resizedFileName");
 
                     // Upload resized image to Azure
                     $this->uploadFile($blobClient, $container, $resizedPath, $azureFilePath, $env);
-                    Log::info("Uploaded to Azure: $azureFilePath");
+                    Log::info("[$env] Uploaded to Azure: $azureFilePath");
                 } else {
-                    Log::info("Image already exists in Azure, skipping upload: $azureFilePath");
+                    Log::info("[$env] Image already exists in Azure, skipping upload: $azureFilePath");
                 }
             }
 
             return true;
         } catch (\Exception $e) {
-            Log::error("Error in syncImage(): " . $e->getMessage());
+            Log::error("[$env] Error in syncImage(): " . $e->getMessage());
             return false;
         }
     }
