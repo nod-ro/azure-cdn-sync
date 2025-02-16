@@ -71,7 +71,7 @@ class AzureBlobStorageService
 
     public function syncImage($env, $nodImageUrl, $azureFolder = false)
     {
-        echo "Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
+        echo "[$env] Processing image: " . json_encode($nodImageUrl) . PHP_EOL;
         try {
             Log::info("[$env] Downloading image from: $nodImageUrl");
 
