@@ -83,7 +83,9 @@ return [
     */
 
     'failed' => [
-        'driver' => 'none',
+        'driver' => 'redis',
+        'database' => env('REDIS_DB', 0),
+        'table' => 'failed_jobs',
     ],
 
 ];
